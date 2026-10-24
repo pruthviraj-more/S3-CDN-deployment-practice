@@ -67,6 +67,13 @@ jobs:
       - name: Build Production Bundle
         run: npm run build
 
+      - name: Inspect OIDC Token Claims (Diagnostic)
+        run: |
+          echo "Inspecting GitHub OIDC token claims for AWS STS..."
+          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "=== Token Payload (sub, aud, iss, repo) ==="
+          echo "$TOKEN" | jq -R 'split(".") | .[1] | @base64d | fromjson | {iss, aud, sub, repository, repository_owner, ref}'
+
       - name: Configure AWS Credentials (OIDC Preferred)
         uses: aws-actions/configure-aws-credentials@v4
         with:
