@@ -1,0 +1,120 @@
+name: Frontend CI/CD - S3 & CloudFront Deployment
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Concurrency group ensures multiple runs on the same branch do not conflict.
+# PR runs will cancel obsolete builds; main branch production deployments queue safely.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  id-token: write # Required for AWS OIDC authentication (Zero-Secret exposure)
+
+jobs:
+  quality-gate:
+    name: Code Quality & Automated Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Static Code Analysis (Lint)
+        run: npm run lint
+
+      - name: Run Automated Test Suite
+        run: npm run test
+
+  build-and-deploy:
+    name: Build & Deploy to AWS S3 + CloudFront
+    needs: [quality-gate]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Production Bundle
+        run: npm run build
+
+      - name: Configure AWS Credentials (OIDC Preferred)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # OIDC Role Assumption (Recommended): Set secrets.AWS_ROLE_ARN
+          # Fallback (Static Keys): Set secrets.AWS_ACCESS_KEY_ID & secrets.AWS_SECRET_ACCESS_KEY
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          role-session-name: GitHubActions-Frontend-Deploy-${{ github.run_id }}
+
+      - name: Sync Immutable Hashed Assets to S3
+        run: |
+          echo "Syncing immutable hashed assets (cache-control: 1 year, immutable)..."
+          aws s3 sync dist/ s3://${{ secrets.AWS_S3_BUCKET }} \
+            --exclude "index.html" \
+            --exclude "*.html" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --delete
+
+      - name: Sync HTML & Dynamic Entrypoints to S3
+        run: |
+          echo "Syncing entrypoint HTML files (cache-control: no-cache, must-revalidate)..."
+          aws s3 sync dist/ s3://${{ secrets.AWS_S3_BUCKET }} \
+            --exclude "*" \
+            --include "index.html" \
+            --include "*.html" \
+            --cache-control "public,max-age=0,must-revalidate,no-cache"
+
+      - name: Invalidate CloudFront Cache
+        id: invalidate
+        run: |
+          echo "Creating CloudFront invalidation for edge distribution..."
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*" \
+            --query "Invalidation.Id" \
+            --output text)
+          echo "invalidation_id=${INVALIDATION_ID}" >> $GITHUB_OUTPUT
+          echo "Invalidation created with ID: ${INVALIDATION_ID}"
+
+      - name: Generate Deployment Step Summary
+        run: |
+          echo "## 🚀 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Target S3 Bucket** | \`${{ secrets.AWS_S3_BUCKET }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **CloudFront Distribution** | \`${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Invalidation ID** | \`${{ steps.invalidate.outputs.invalidation_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit Ref** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered By** | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
