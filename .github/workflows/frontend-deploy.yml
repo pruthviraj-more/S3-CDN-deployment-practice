@@ -4,16 +4,18 @@ on:
   push:
     branches:
       - main
+      - master
   pull_request:
     branches:
       - main
+      - master
   workflow_dispatch:
 
 # Concurrency group ensures multiple runs on the same branch do not conflict.
-# PR runs will cancel obsolete builds; main branch production deployments queue safely.
+# PR runs will cancel obsolete builds; production deployments queue safely.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
@@ -46,7 +48,7 @@ jobs:
   build-and-deploy:
     name: Build & Deploy to AWS S3 + CloudFront
     needs: [quality-gate]
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
