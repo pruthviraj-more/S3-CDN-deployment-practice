@@ -48,7 +48,6 @@ jobs:
     needs: [quality-gate]
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
